@@ -23,10 +23,16 @@
 #include "tfs.h"
 
 char diskfile_path[PATH_MAX];
-bitmap_t inodebmap;
-bitmap_t datablockbmap;
 
 // Declare your in-memory data structures here
+struct superblock sblock;
+int totalblocks = DISK_SIZE/BLOCK_SIZE;
+int num_inode_blocks = ((MAX_INUM*sizeof(struct inode))+BLOCK_SIZE-1)/BLOCK_SIZE;
+int num_data_blocks = (MAX_DNUM+BLOCK_SIZE-1)/BLOCK_SIZE;
+int num_inodebmap_blocks = (((MAX_INUM*sizeof(unsigned char))/8)+BLOCK_SIZE-1)/BLOCK_SIZE;
+int num_dblockbmap_blocks = (((MAX_DNUM*sizeof(unsigned char))/8)+BLOCK_SIZE-1)/BLOCK_SIZE;
+bitmap_t inodebmap;
+bitmap_t dblockbmap;
 
 /* 
  * Get available inode number from bitmap
@@ -140,46 +146,40 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
  * Make file system
  */
 int tfs_mkfs() {
-	//Get number of blocks needed for allocation
-	int totalblocks = DISK_SIZE/BLOCK_SIZE;
-	int num_inode_blocks = ((MAX_INUM*sizeof(struct inode))+BLOCK_SIZE-1)/BLOCK_SIZE;
-	int num_data_blocks = (MAX_DNUM+BLOCK_SIZE-1)/BLOCK_SIZE;
-	int num_inodebmap_blocks = (((MAX_INUM*sizeof(unsigned char))/8)+BLOCK_SIZE-1)/BLOCK_SIZE;
-	int num_dblockbmap_blocks = (((MAX_DNUM*sizeof(unsigned char))/8)+BLOCK_SIZE-1)/BLOCK_SIZE;
-	printf("Disk size: %d\nBlock size: %d\nTotal blocks: %d\n", DISK_SIZE, BLOCK_SIZE, totalblocks);
-	printf("Max inum: %d\nNum blocks for inode: %d\nNum blocks for inodebmap: %d\n", MAX_INUM, num_inode_blocks, num_inodebmap_blocks);
-	printf("Max dblock: %d\nNum blocks for data block: %d\nNum blocks for dblockbmap: %d\n",MAX_DNUM, num_data_blocks, num_dblockbmap_blocks);
-	// Call dev_init() to initialize (Create) Diskfile
-	dev_init(diskfile_path);
-
-	// write superblock information
 	/*
-	ORDER OF STORAGE FOR FILE SYSTEM
+	ORDER OF STORAGE FOR FILE SYSTEM:
 	Superblock is first thing in file system
 	Then comes inode bitmap and data block bitbmap
 	Then comes inode region
 	Then comes data block region
 	(Found on page 4 of Chapter 41 in textbook)
 	*/
-	struct superblock newsblock; //Structure of superblock is in tfs.h
-	newsblock.magic_num = MAGIC_NUM; //Dont know what this does
-	newsblock.max_inum = MAX_INUM; //Maximum number of inodes
-	newsblock.max_dnum = MAX_DNUM; //Maximum number of datablocks
-	newsblock.i_bitmap_blk = 1; //Start block of inode bitmap -- One block after superblock which will always take up 1 block
-	newsblock.d_bitmap_blk = newsblock.i_bitmap_blk + num_inodebmap_blocks; //Start block of datablock bitmap
-	newsblock.i_start_blk = newsblock.d_bitmap_blk + num_dblockbmap_blocks; //Start block of inodes
-	newsblock.d_start_blk = newsblock.i_start_blk + num_inode_blocks; //Start block of datablock
+	printf("Disk size: %d\nBlock size: %d\nTotal blocks: %d\n", DISK_SIZE, BLOCK_SIZE, totalblocks);
+	printf("Max inum: %d\nNum blocks for inode: %d\nNum blocks for inodebmap: %d\n", MAX_INUM, num_inode_blocks, num_inodebmap_blocks);
+	printf("Max dblock: %d\nNum blocks for data block: %d\nNum blocks for dblockbmap: %d\n",MAX_DNUM, num_data_blocks, num_dblockbmap_blocks);
+	// Call dev_init() to initialize (Create) Diskfile
+	dev_init(diskfile_path);
+
+	//write superblock information 
+	//sblock is a globally declared superblock, structure for a superblock is in tfs.h
+	sblock.magic_num = MAGIC_NUM; //Dont know what this does
+	sblock.max_inum = MAX_INUM; //Maximum number of inodes
+	sblock.max_dnum = MAX_DNUM; //Maximum number of datablocks
+	sblock.i_bitmap_blk = 1; //Start block of inode bitmap -- One block after superblock which will always take up 1 block
+	sblock.d_bitmap_blk = sblock.i_bitmap_blk + num_inodebmap_blocks; //Start block of datablock bitmap
+	sblock.i_start_blk = sblock.d_bitmap_blk + num_dblockbmap_blocks; //Start block of inodes
+	sblock.d_start_blk = sblock.i_start_blk + num_inode_blocks; //Start block of datablock
 	printf("Writing superblock to block 0\n");
-	printf("This is block 0 writing to DISK from: %p\n", &newsblock);
-	bio_write(0, &newsblock);
+	printf("This is block 0 writing to DISK from: %p\n", &sblock);
+	bio_write(0, &sblock);
 
 	// initialize inode bitmap
-	bitmap_t inodebmap = malloc(sizeof(unsigned char)*(MAX_INUM/8));
+	inodebmap = malloc(sizeof(unsigned char)*(MAX_INUM/8));
 	for(int i = 0; i < MAX_INUM; i++){
 		unset_bitmap(inodebmap, i);
 	}
 	// initialize data block bitmap
-	bitmap_t dblockbmap = malloc(sizeof(unsigned char) * (MAX_DNUM/8));
+	dblockbmap = malloc(sizeof(unsigned char) * (MAX_DNUM/8));
 	for(int i = 0; i < MAX_DNUM; i++){
 		unset_bitmap(dblockbmap, i);
 	}
@@ -188,15 +188,15 @@ int tfs_mkfs() {
 	// update inode for root directory
 	set_bitmap(inodebmap, 0);
 	//write inodebmap to disk
-	printf("Writing inode bitmap to blocks %d - %d\n", newsblock.i_bitmap_blk, newsblock.i_bitmap_blk+num_inodebmap_blocks-1);
-	for(int i = newsblock.i_bitmap_blk; i < newsblock.i_bitmap_blk+num_inodebmap_blocks; i++){
-		printf("This is block %d writing to DISK from: %p\n", i-newsblock.i_bitmap_blk, (inodebmap+(i*BLOCK_SIZE)));
+	printf("Writing inode bitmap to blocks %d - %d\n", sblock.i_bitmap_blk, sblock.i_bitmap_blk+num_inodebmap_blocks-1);
+	for(int i = sblock.i_bitmap_blk; i < sblock.i_bitmap_blk+num_inodebmap_blocks; i++){
+		printf("This is block %d writing to DISK from: %p\n", i-sblock.i_bitmap_blk, (inodebmap+(i*BLOCK_SIZE)));
 		bio_write(i, (inodebmap+(i*BLOCK_SIZE)));
 	}
 	//write dblockbmap to disk
-	printf("Writing dblock bitmap to blocks %d - %d\n", newsblock.d_bitmap_blk,newsblock.d_bitmap_blk+num_dblockbmap_blocks-1);
-	for(int i = newsblock.d_bitmap_blk; i < newsblock.d_bitmap_blk+num_dblockbmap_blocks; i++){
-		printf("This is block %d writing to DISK from: %p\n", i-newsblock.d_bitmap_blk, (dblockbmap+(i*BLOCK_SIZE)));
+	printf("Writing dblock bitmap to blocks %d - %d\n", sblock.d_bitmap_blk,sblock.d_bitmap_blk+num_dblockbmap_blocks-1);
+	for(int i = sblock.d_bitmap_blk; i < sblock.d_bitmap_blk+num_dblockbmap_blocks; i++){
+		printf("This is block %d writing to DISK from: %p\n", i-sblock.d_bitmap_blk, (dblockbmap+(i*BLOCK_SIZE)));
 		bio_write(i, (dblockbmap+(i*BLOCK_SIZE)));
 	}
 	return 0;
@@ -207,20 +207,38 @@ int tfs_mkfs() {
  * FUSE file operations
  */
 static void *tfs_init(struct fuse_conn_info *conn) {
-
 	// Step 1a: If disk file is not found, call mkfs
-
-  // Step 1b: If disk file is found, just initialize in-memory data structures
-  // and read superblock from disk
-
+	if(dev_open(diskfile_path) == -1) {
+		printf("Calling tfs_mkfs() from tfs_init()\n");
+		tfs_mkfs();
+	}
+	// Step 1b: If disk file is found, just initialize in-memory data structures
+	// and read superblock from disk
+	else{
+		//get space for bitmaps in local storage
+		printf("Making space for inode bitmap...\n");
+		inodebmap = malloc(sizeof(unsigned char)*(MAX_INUM/8));
+		printf("Making space for datablock bitmap...\n");
+		dblockbmap = malloc(sizeof(unsigned char)*(MAX_INUM/8));
+		//read superblock from disk
+		printf("Reading superblock from disk...\n");
+		bio_read(0, &sblock);
+	}
+	
+	
 	return NULL;
 }
 
 static void tfs_destroy(void *userdata) {
 
 	// Step 1: De-allocate in-memory data structures
-
+	printf("Freeing inode bitmap...\n");
+	free(inodebmap);
+	printf("Freeing data block bitmap...\n");
+	free(dblockbmap);
 	// Step 2: Close diskfile
+	printf("Closing %s...\n", diskfile_path);
+	dev_close();
 
 }
 
@@ -421,7 +439,8 @@ int main(int argc, char *argv[]) {
 	strcat(diskfile_path, "/DISKFILE");
 
 	fuse_stat = fuse_main(argc, argv, &tfs_ope, NULL);
-	tfs_mkfs();
+	tfs_init(NULL);
+	tfs_destroy(NULL);
 	return fuse_stat;
 }
 
