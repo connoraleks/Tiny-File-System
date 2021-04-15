@@ -41,7 +41,6 @@ int get_avail_ino() {
 
 	// Step 1: Read inode bitmap from disk
 	for(int i = sblock.i_bitmap_blk; i < (sblock.i_bitmap_blk+num_inodebmap_blocks); i++){
-		printf("%d %d\n", i, (i-sblock.i_bitmap_blk));
 		bio_read(i, (inodebmap+((i-sblock.i_bitmap_blk)*BLOCK_SIZE)));
 	}
 
@@ -81,22 +80,53 @@ int get_avail_blkno() {
 int readi(uint16_t ino, struct inode *inode) {
 
   // Step 1: Get the inode's on-disk block number
+  int block_no = sblock.i_start_blk;
+
+  //block_no will be right after this calculation
+  int inodes_per_block = MAX_INUM/num_inode_blocks;
+  int i = ino;
+  while((i/inodes_per_block) > 0){
+	  i-=inodes_per_block;
+	  block_no++;
+  }
+  //block_no will be accurate now
 
   // Step 2: Get offset of the inode in the inode on-disk block
-
+  int offset = i;
+  printf("This is the block_no: %d\nThis is the offset in that block: %d\n", block_no, offset);
   // Step 3: Read the block from disk and then copy into inode structure
-
-	return 0;
+  struct inode* buf = (struct inode *)malloc(BLOCK_SIZE);
+  bio_read(block_no, (void*)buf);
+  inode = &buf[offset];
+  free(buf);
+  //IF INODE DOES NOT EXIST IT WILL CAUSE SEGFAULT
+  printf("This is ino: %d\n", inode->ino);
+  return 0;
 }
 
 int writei(uint16_t ino, struct inode *inode) {
 
 	// Step 1: Get the block number where this inode resides on disk
-	
+	int block_no = sblock.i_start_blk;
+
+	//block_no will be right after this calculation
+	int inodes_per_block = MAX_INUM/num_inode_blocks;
+	int i = ino;
+	while((i/inodes_per_block) > 0){
+		i-=inodes_per_block;
+		block_no++;
+	}
+	//block_no will be accurate now
+	struct inode* buf = (struct inode *)malloc(BLOCK_SIZE);
+	bio_read(block_no, (void*)buf);
 	// Step 2: Get the offset in the block where this inode resides on disk
-
+	int offset = i;
+	printf("This is the block_no: %d\nThis is the offset in that block: %d\n", block_no, offset);
+	buf[offset] = *inode;
+	printf("This is ino: %d\n", buf[offset].ino);
 	// Step 3: Write inode to disk 
-
+	bio_write(block_no, (void*)buf);
+	free(buf);
 	return 0;
 }
 
@@ -452,9 +482,14 @@ int main(int argc, char *argv[]) {
 	strcat(diskfile_path, "/DISKFILE");
 
 	fuse_stat = fuse_main(argc, argv, &tfs_ope, NULL);
+	struct inode test;
+	test.ino = 15;
+	struct inode test2;
 	tfs_init(NULL);
 	get_avail_blkno();
 	get_avail_ino();
+	writei(15, &test);
+	readi(15, &test2);
 	tfs_destroy(NULL);
 	return fuse_stat;
 }
