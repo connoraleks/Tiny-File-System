@@ -40,12 +40,19 @@ bitmap_t dblockbmap;
 int get_avail_ino() {
 
 	// Step 1: Read inode bitmap from disk
-	
+	for(int i = sblock.i_bitmap_blk; i < (sblock.i_bitmap_blk+num_inodebmap_blocks); i++){
+		printf("%d %d\n", i, (i-sblock.i_bitmap_blk));
+		bio_read(i, (inodebmap+((i-sblock.i_bitmap_blk)*BLOCK_SIZE)));
+	}
+
 	// Step 2: Traverse inode bitmap to find an available slot
-
+	int index = 0;
+	while(get_bitmap(inodebmap, index) == 1 && index < MAX_INUM) index++;
+	if(index == MAX_INUM) return -1; //nothing found
+	
 	// Step 3: Update inode bitmap and write to disk 
-
-	return 0;
+	set_bitmap(inodebmap, index);
+	return index;
 }
 
 /* 
@@ -54,12 +61,18 @@ int get_avail_ino() {
 int get_avail_blkno() {
 
 	// Step 1: Read data block bitmap from disk
+	for(int i = sblock.d_bitmap_blk; i < (sblock.d_bitmap_blk+num_dblockbmap_blocks); i++){
+		bio_read(i, (dblockbmap+((i-sblock.d_bitmap_blk)*BLOCK_SIZE)));
+	}
 	
 	// Step 2: Traverse data block bitmap to find an available slot
+	int index = 0;
+	while(get_bitmap(dblockbmap, index) == 1 && index < MAX_DNUM) index++;
+	if(index == MAX_DNUM) return -1; //nothing found
 
 	// Step 3: Update data block bitmap and write to disk 
-
-	return 0;
+	set_bitmap(dblockbmap, index);
+	return index;
 }
 
 /* 
@@ -168,7 +181,7 @@ int tfs_mkfs() {
 	sblock.i_bitmap_blk = 1; //Start block of inode bitmap -- One block after superblock which will always take up 1 block
 	sblock.d_bitmap_blk = sblock.i_bitmap_blk + num_inodebmap_blocks; //Start block of datablock bitmap
 	sblock.i_start_blk = sblock.d_bitmap_blk + num_dblockbmap_blocks; //Start block of inodes
-	sblock.d_start_blk = sblock.i_start_blk + num_inode_blocks; //Start block of datablock
+	sblock.d_start_blk = sblock.i_start_blk + num_inode_blocks; //Start block of datablockprintf("Super block information read: \n");
 	printf("Writing superblock to block 0\n");
 	printf("This is block 0 writing to DISK from: %p\n", &sblock);
 	bio_write(0, &sblock);
@@ -191,13 +204,13 @@ int tfs_mkfs() {
 	printf("Writing inode bitmap to blocks %d - %d\n", sblock.i_bitmap_blk, sblock.i_bitmap_blk+num_inodebmap_blocks-1);
 	for(int i = sblock.i_bitmap_blk; i < sblock.i_bitmap_blk+num_inodebmap_blocks; i++){
 		printf("This is block %d writing to DISK from: %p\n", i-sblock.i_bitmap_blk, (inodebmap+(i*BLOCK_SIZE)));
-		bio_write(i, (inodebmap+(i*BLOCK_SIZE)));
+		bio_write(i, (inodebmap+((i-sblock.i_bitmap_blk)*BLOCK_SIZE)));
 	}
 	//write dblockbmap to disk
 	printf("Writing dblock bitmap to blocks %d - %d\n", sblock.d_bitmap_blk,sblock.d_bitmap_blk+num_dblockbmap_blocks-1);
 	for(int i = sblock.d_bitmap_blk; i < sblock.d_bitmap_blk+num_dblockbmap_blocks; i++){
 		printf("This is block %d writing to DISK from: %p\n", i-sblock.d_bitmap_blk, (dblockbmap+(i*BLOCK_SIZE)));
-		bio_write(i, (dblockbmap+(i*BLOCK_SIZE)));
+		bio_write(i, (dblockbmap+((i-sblock.d_bitmap_blk)*BLOCK_SIZE)));
 	}
 	return 0;
 }
@@ -219,7 +232,7 @@ static void *tfs_init(struct fuse_conn_info *conn) {
 		printf("Making space for inode bitmap...\n");
 		inodebmap = malloc(sizeof(unsigned char)*(MAX_INUM/8));
 		printf("Making space for datablock bitmap...\n");
-		dblockbmap = malloc(sizeof(unsigned char)*(MAX_INUM/8));
+		dblockbmap = malloc(sizeof(unsigned char)*(MAX_DNUM/8));
 		//read superblock from disk
 		printf("Reading superblock from disk...\n");
 		bio_read(0, &sblock);
@@ -440,6 +453,8 @@ int main(int argc, char *argv[]) {
 
 	fuse_stat = fuse_main(argc, argv, &tfs_ope, NULL);
 	tfs_init(NULL);
+	get_avail_blkno();
+	get_avail_ino();
 	tfs_destroy(NULL);
 	return fuse_stat;
 }
