@@ -221,7 +221,6 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 	int j;
 	struct dirent dblock[num_dirent_per_block+1];
 	for(i = 0; i < 16; i++){
-		printf("This is dir_inode.direct_ptr[%d]: %d\n", i, dir_inode.direct_ptr[i]);
 		if(dir_inode.direct_ptr[i] == 0){
 			if(empty_block == -1) empty_block = i;
 			continue;
@@ -599,10 +598,10 @@ int main(int argc, char *argv[]) {
 	tfs_init(NULL);
 	struct inode test;
 	test.ino = 15;
-	memset(test.direct_ptr, 0, sizeof(int)*16);
+	readi(test.ino, &test);
 	struct dirent d;
 	dir_add(test,20, "testdir", 7);
-	//dir_add(test, 21, "testdir1", 8);
+	dir_add(test, 21, "testdir1", 8);
 	printf("Was the directory found?: %d\n",dir_find(test.ino, "testdir",7, &d));
 	printf("Was the directory found?: %d\n",dir_find(test.ino, "testdir1",8, &d));
 	dir_remove(test, "testdir", 7);
