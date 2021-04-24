@@ -24,8 +24,9 @@ int main(int argc, char **argv) {
 
 	int i, fd = 0, ret = 0;
 	struct stat st;
-
+	printf("This is TESTDIR: %s\n", TESTDIR);
 	if ((fd = creat(TESTDIR "/file", FILEPERM)) < 0) {
+		printf("This is errno: %d\n", errno);
 		perror("creat");
 		printf("TEST 1: File create failure \n");
 		exit(1);
@@ -33,20 +34,20 @@ int main(int argc, char **argv) {
 	printf("TEST 1: File create Success \n");
 
 
-	/* Perform sequential writes */
+	/* Perform sequential writes*/ 
 	for (i = 0; i < ITERS; i++) {
 		//memset with some random data
 		memset(buf, 0x61 + i, BLOCKSIZE);
-
-		if (write(fd, buf, BLOCKSIZE) != BLOCKSIZE) {
-			printf("TEST 2: File write failure \n");
+		int j;
+		if ((j=write(fd, buf, BLOCKSIZE)) != BLOCKSIZE) {
+			printf("TEST 2: File write failure %d bytes\n", j);
 			exit(1);
 		}
 	}
 	
 	fstat(fd, &st);
 	if (st.st_size != ITERS*BLOCKSIZE) {
-		printf("TEST 2: File write failure \n");
+		printf("TEST 2: File write failure %d stsize != %d\n", st.st_size, ITERS*BLOCKSIZE);
 		exit(1);
 	}
 	printf("TEST 2: File write Success \n");
@@ -70,17 +71,17 @@ int main(int argc, char **argv) {
 	for (i = 0; i < ITERS; i++) {
 		//clear buffer
 		memset(buf, 0, BLOCKSIZE);
-
-		if (read(fd, buf, BLOCKSIZE) != BLOCKSIZE) {
-			printf("TEST 4: File read failure \n");
+		int j;
+		if ((j = read(fd, buf, BLOCKSIZE)) != BLOCKSIZE) {
+			printf("TEST 4: File read failure %d vs %d\n",j, BLOCKSIZE );
 			exit(1);
 		}
 		//printf("buf %s \n", buf);
 	}
-        
-	if (pread(fd, buf, BLOCKSIZE, 2*BLOCKSIZE) != BLOCKSIZE) {
+	int j; 
+	if ((j = pread(fd, buf, BLOCKSIZE, 2*BLOCKSIZE)) != BLOCKSIZE) {
 		perror("pread");
-		printf("TEST 4: File read failure \n");
+		printf("TEST 4: File read failure %d vs %d\n", j, BLOCKSIZE);
 		exit(1);
 	}
     
