@@ -63,7 +63,7 @@ int get_avail_ino() {
  * Get available data block number from bitmap
  */
 int get_avail_blkno() {
-
+	
 	// Step 1: Read data block bitmap from disk
 	for(int i = sblock->d_bitmap_blk; i < (sblock->d_bitmap_blk+num_dblockbmap_blocks); i++){
 		bio_read(i, (dblockbmap+((i-sblock->d_bitmap_blk)*BLOCK_SIZE)));
@@ -627,6 +627,9 @@ static int tfs_rmdir(const char *path) {
 	}
 	// Step 4: Clear inode bitmap and its data block (i cleared the data block in the previous for statement)
 	unset_bitmap(inodebmap, target.ino);
+	for(int i = sblock->i_bitmap_blk; i < (sblock->i_bitmap_blk+num_inodebmap_blocks); i++){
+		bio_write(i, (inodebmap+((i-sblock->i_bitmap_blk)*BLOCK_SIZE)));
+	}
 	// Step 5: Call get_node_by_path() to get inode of parent directory
 	struct inode parent;
 	if(get_node_by_path(dname, 0, &parent) == -1){
