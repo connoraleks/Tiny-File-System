@@ -28,7 +28,7 @@ int main(int argc, char **argv) {
 	if ((fd = creat(TESTDIR "/file", FILEPERM)) < 0) {
 		printf("This is errno: %d\n", errno);
 		perror("creat");
-		printf("TEST 1: File create failure \n");
+		printf("TEST 1: File create failure %d \n", fd);
 		exit(1);
 	}
 	printf("TEST 1: File create Success \n");
@@ -92,7 +92,7 @@ int main(int argc, char **argv) {
 	/* Unlink the file */
 	if ((ret = unlink(TESTDIR "/file")) < 0) {
 		perror("unlink");
-		printf("TEST 5: File unlink failure \n");
+		printf("TEST 5: File unlink failure %d\n", ret);
 		exit(1);
 	}
 	printf("TEST 5: File unlink success \n");

@@ -20,6 +20,7 @@
 #include <sys/time.h>
 #include <libgen.h>
 #include <limits.h>
+#include <pthread.h>
 
 #include "block.h"
 #include "tfs.h"
@@ -27,37 +28,35 @@
 char diskfile_path[PATH_MAX];
 
 // Declare your in-memory data structures here
-struct superblock sblock;
+struct superblock* sblock;
 int totalblocks = DISK_SIZE/BLOCK_SIZE;
 int num_inode_blocks = ((MAX_INUM*sizeof(struct inode))+BLOCK_SIZE-1)/BLOCK_SIZE;
 int num_data_blocks = (MAX_DNUM+BLOCK_SIZE-1)/BLOCK_SIZE;
 int num_inodebmap_blocks = (((MAX_INUM*sizeof(unsigned char))/8)+BLOCK_SIZE-1)/BLOCK_SIZE;
 int num_dblockbmap_blocks = (((MAX_DNUM*sizeof(unsigned char))/8)+BLOCK_SIZE-1)/BLOCK_SIZE;
 int num_dirent_per_block = (BLOCK_SIZE)/sizeof(struct dirent);
-unsigned char inodebmap[MAX_INUM/8];
-unsigned char dblockbmap[MAX_DNUM/8];
+bitmap_t inodebmap;
+bitmap_t dblockbmap;
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* 
  * Get available inode number from bitmap
  */
 int get_avail_ino() {
-
 	// Step 1: Read inode bitmap from disk
-	for(int i = sblock.i_bitmap_blk; i < (sblock.i_bitmap_blk+num_inodebmap_blocks); i++){
-		bio_read(i, (inodebmap+((i-sblock.i_bitmap_blk)*BLOCK_SIZE)));
+	for(int i = sblock->i_bitmap_blk; i < (sblock->i_bitmap_blk+num_inodebmap_blocks); i++){
+		bio_read(i, (inodebmap+((i-sblock->i_bitmap_blk)*BLOCK_SIZE)));
 	}
-
 	// Step 2: Traverse inode bitmap to find an available slot
 	int index = 0;
 	while(get_bitmap(inodebmap, index) == 1 && index < MAX_INUM) index++;
 	if(index == MAX_INUM) return -1; //nothing found
-	
 	// Step 3: Update inode bitmap and write to disk 
 	set_bitmap(inodebmap, index);
-	for(int i = sblock.i_bitmap_blk; i < (sblock.i_bitmap_blk+num_inodebmap_blocks); i++){
-		bio_write(i, (inodebmap+((i-sblock.i_bitmap_blk)*BLOCK_SIZE)));
+	for(int i = sblock->i_bitmap_blk; i < (sblock->i_bitmap_blk+num_inodebmap_blocks); i++){
+		bio_write(i, (inodebmap+((i-sblock->i_bitmap_blk)*BLOCK_SIZE)));
 	}
-	return (sblock.i_start_blk+index);
+	return (sblock->i_start_blk+index);
 }
 
 /* 
@@ -66,8 +65,8 @@ int get_avail_ino() {
 int get_avail_blkno() {
 
 	// Step 1: Read data block bitmap from disk
-	for(int i = sblock.d_bitmap_blk; i < (sblock.d_bitmap_blk+num_dblockbmap_blocks); i++){
-		bio_read(i, (dblockbmap+((i-sblock.d_bitmap_blk)*BLOCK_SIZE)));
+	for(int i = sblock->d_bitmap_blk; i < (sblock->d_bitmap_blk+num_dblockbmap_blocks); i++){
+		bio_read(i, (dblockbmap+((i-sblock->d_bitmap_blk)*BLOCK_SIZE)));
 	}
 	
 	// Step 2: Traverse data block bitmap to find an available slot
@@ -77,10 +76,10 @@ int get_avail_blkno() {
 
 	// Step 3: Update data block bitmap and write to disk 
 	set_bitmap(dblockbmap, index);
-	for(int i = sblock.d_bitmap_blk; i < (sblock.d_bitmap_blk+num_dblockbmap_blocks); i++){
-		bio_write(i, (dblockbmap+((i-sblock.d_bitmap_blk)*BLOCK_SIZE)));
+	for(int i = sblock->d_bitmap_blk; i < (sblock->d_bitmap_blk+num_dblockbmap_blocks); i++){
+		bio_write(i, (dblockbmap+((i-sblock->d_bitmap_blk)*BLOCK_SIZE)));
 	}
-	return (sblock.d_start_blk+index);
+	return (sblock->d_start_blk+index);
 }
 
 /* 
@@ -89,7 +88,7 @@ int get_avail_blkno() {
 int readi(uint16_t ino, struct inode *inode) {
 
   // Step 1: Get the inode's on-disk block number
-  int block_no = sblock.i_start_blk;
+  int block_no = sblock->i_start_blk;
 
   //block_no will be right after this calculation
   int inodes_per_block = MAX_INUM/num_inode_blocks;
@@ -129,7 +128,7 @@ int readi(uint16_t ino, struct inode *inode) {
 int writei(uint16_t ino, struct inode *inode) {
 
 	// Step 1: Get the block number where this inode resides on disk
-	int block_no = sblock.i_start_blk;
+	int block_no = sblock->i_start_blk;
 
 	//block_no will be right after this calculation
 	int inodes_per_block = MAX_INUM/num_inode_blocks;
@@ -179,7 +178,6 @@ int dir_find(uint16_t ino, const char *fname, size_t name_len, struct dirent *di
 	int flag = 0;
 	int i, j;
 	for(i = 0; i < 16; i++){
-		printf("This is direct_ptr[%d]: %d\n", i, temp.direct_ptr[i]);
 		if(temp.direct_ptr[i] == 0) continue;
 		else{
 			bio_read(temp.direct_ptr[i], (void*)dblock);
@@ -324,6 +322,8 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 			dblock[i].valid = 0;
 		}
 	}
+	dir_inode.link--;
+	writei(dir_inode.ino, &dir_inode);
 	bio_write(t, &dblock);
 	return 0;
 }
@@ -374,24 +374,22 @@ int tfs_mkfs() {
 	Then comes data block region
 	(Found on page 4 of Chapter 41 in textbook)
 	*/
-	printf("Disk size: %d\nBlock size: %d\nTotal blocks: %d\n", DISK_SIZE, BLOCK_SIZE, totalblocks);
-	printf("Max inum: %d\nNum blocks for inode: %d\nNum blocks for inodebmap: %d\n", MAX_INUM, num_inode_blocks, num_inodebmap_blocks);
-	printf("Max dblock: %d\nNum blocks for data block: %d\nNum blocks for dblockbmap: %d\n",MAX_DNUM, num_data_blocks, num_dblockbmap_blocks);
 	// Call dev_init() to initialize (Create) Diskfile
 	dev_init(diskfile_path);
 
 	//write superblock information 
 	//sblock is a globally declared superblock, structure for a superblock is in tfs.h
-	sblock.magic_num = MAGIC_NUM; //Dont know what this does
-	sblock.max_inum = MAX_INUM; //Maximum number of inodes
-	sblock.max_dnum = MAX_DNUM; //Maximum number of datablocks
-	sblock.i_bitmap_blk = 1; //Start block of inode bitmap -- One block after superblock which will always take up 1 block
-	sblock.d_bitmap_blk = sblock.i_bitmap_blk + num_inodebmap_blocks; //Start block of datablock bitmap
-	sblock.i_start_blk = sblock.d_bitmap_blk + num_dblockbmap_blocks; //Start block of inodes
-	sblock.d_start_blk = sblock.i_start_blk + num_inode_blocks; //Start block of datablockprintf("Super block information read: \n");
-	printf("Writing superblock to block 0\n");
-	printf("This is block 0 writing to DISK from: %p\n", &sblock);
-	bio_write(0, &sblock);
+	sblock = malloc(BLOCK_SIZE);
+	inodebmap = malloc(BLOCK_SIZE * num_inodebmap_blocks);
+	dblockbmap = malloc(BLOCK_SIZE * num_dblockbmap_blocks);
+	sblock->magic_num = MAGIC_NUM; //Dont know what this does
+	sblock->max_inum = MAX_INUM; //Maximum number of inodes
+	sblock->max_dnum = MAX_DNUM; //Maximum number of datablocks
+	sblock->i_bitmap_blk = 1; //Start block of inode bitmap -- One block after superblock which will always take up 1 block
+	sblock->d_bitmap_blk = sblock->i_bitmap_blk + num_inodebmap_blocks; //Start block of datablock bitmap
+	sblock->i_start_blk = sblock->d_bitmap_blk + num_dblockbmap_blocks; //Start block of inodes
+	sblock->d_start_blk = sblock->i_start_blk + num_inode_blocks; //Start block of datablockprintf("Super block information read: \n");
+	bio_write(0, sblock);
 
 	// initialize inode bitmap	
 	for(int i = 0; i < MAX_INUM; i++){
@@ -414,7 +412,7 @@ int tfs_mkfs() {
 		root.direct_ptr[i] = 0;
 		if(i < 8) root.indirect_ptr[i] = 0;
 	}
-	root.direct_ptr[0] = sblock.d_start_blk;
+	root.direct_ptr[0] = sblock->d_start_blk;
 	set_bitmap(dblockbmap, 0);
 	struct dirent dblock[num_dirent_per_block+1];
 	bio_read(root.direct_ptr[0], &dblock);
@@ -428,18 +426,13 @@ int tfs_mkfs() {
 	// update inode for root directory
 	set_bitmap(inodebmap, 0);
 	//write inodebmap to disk
-	printf("Writing inode bitmap to blocks %d - %d\n", sblock.i_bitmap_blk, sblock.i_bitmap_blk+num_inodebmap_blocks-1);
-	for(int i = sblock.i_bitmap_blk; i < sblock.i_bitmap_blk+num_inodebmap_blocks; i++){
-		printf("This is block %d writing to DISK from: %p\n", i-sblock.i_bitmap_blk, (inodebmap+(i*BLOCK_SIZE)));
-		bio_write(i, (inodebmap+((i-sblock.i_bitmap_blk)*BLOCK_SIZE)));
+	for(int i = sblock->i_bitmap_blk; i < sblock->i_bitmap_blk+num_inodebmap_blocks; i++){
+		bio_write(i, (inodebmap+((i-sblock->i_bitmap_blk)*BLOCK_SIZE)));
 	}
 	//write dblockbmap to disk
-	printf("Writing dblock bitmap to blocks %d - %d\n", sblock.d_bitmap_blk,sblock.d_bitmap_blk+num_dblockbmap_blocks-1);
-	for(int i = sblock.d_bitmap_blk; i < sblock.d_bitmap_blk+num_dblockbmap_blocks; i++){
-		printf("This is block %d writing to DISK from: %p\n", i-sblock.d_bitmap_blk, (dblockbmap+(i*BLOCK_SIZE)));
-		bio_write(i, (dblockbmap+((i-sblock.d_bitmap_blk)*BLOCK_SIZE)));
+	for(int i = sblock->d_bitmap_blk; i < sblock->d_bitmap_blk+num_dblockbmap_blocks; i++){
+		bio_write(i, (dblockbmap+((i-sblock->d_bitmap_blk)*BLOCK_SIZE)));
 	}
-	printf("Finished tfs_mkfs\n");
 	return 0;
 }
 
@@ -448,49 +441,47 @@ int tfs_mkfs() {
  * FUSE file operations
  */
 static void *tfs_init(struct fuse_conn_info *conn) {
+	//pthread_mutex_lock(&lock);
 	// Step 1a: If disk file is not found, call mkfs
 	if(dev_open(diskfile_path) == -1) {
-		printf("Calling tfs_mkfs() from tfs_init()\n");
 		tfs_mkfs();
 	}
 	// Step 1b: If disk file is found, just initialize in-memory data structures
 	// and read superblock from disk
 	else{
 		//get space for bitmaps in local storage
-		printf("Making space for inode bitmap...\n");
-		printf("Making space for datablock bitmap...\n");
+		inodebmap = malloc(BLOCK_SIZE * num_inodebmap_blocks);
+		dblockbmap = malloc(BLOCK_SIZE * num_dblockbmap_blocks);
 		//read superblock from disk
-		printf("Reading superblock from disk...\n");
-		bio_read(0, &sblock);
+		sblock = malloc(BLOCK_SIZE);
+		bio_read(0, sblock);
 	}
 	
-	
+	//pthread_mutex_unlock(&lock);
 	return NULL;
 }
 
 static void tfs_destroy(void *userdata) {
 
 	// Step 1: De-allocate in-memory data structures
-	printf("Freeing inode bitmap...\n");
-	//free(inodebmap);
-	printf("Freeing data block bitmap...\n");
-	//free(dblockbmap);
+	free(inodebmap);
+	free(dblockbmap);
+	free(sblock);
 	// Step 2: Close diskfile
-	printf("Closing %s...\n", diskfile_path);
 	dev_close();
 
 }
 
 static int tfs_getattr(const char *path, struct stat *stbuf) {
-
+	pthread_mutex_lock(&lock);
 	// Step 1: call get_node_by_path() to get inode from path
 	struct inode i;
 	if(get_node_by_path(path, 0, &i) == -1){
 		printf("didnt find %s\n", path);
+		pthread_mutex_unlock(&lock);
 		return -ENOENT;
 	}
 	// Step 2: fill attribute of file into stbuf from inode
-	printf("This is i.type: %d\n", i.type);
 	stbuf->st_uid = getuid();
 	stbuf->st_gid = getgid();
 	if(i.type == DIR){ 
@@ -505,26 +496,32 @@ static int tfs_getattr(const char *path, struct stat *stbuf) {
 	stbuf->st_blksize = BLOCK_SIZE;
 	time(&stbuf->st_mtime);
 	time(&stbuf->st_atime);
+	pthread_mutex_unlock(&lock);
 	return 0;
 }
 
 static int tfs_opendir(const char *path, struct fuse_file_info *fi) {
-
+	pthread_mutex_lock(&lock);
 	// Step 1: Call get_node_by_path() to get inode from path
 	struct inode i;
 	get_node_by_path(path, 0, &i);
-	if(i.valid == 1) return 0;
+	if(i.valid == 1){
+		pthread_mutex_unlock(&lock);
+		return 0;
+	}
 	// Step 2: If not find, return -1
+	pthread_mutex_unlock(&lock);
     return -1;
 }
 
 static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
-
+	pthread_mutex_lock(&lock);
 	// Step 1: Call get_node_by_path() to get inode from path
 	struct inode i;
 	get_node_by_path(path, 0, &i);
 	if(i.valid != 1){
 		printf("Directory not valid\n");
+		pthread_mutex_unlock(&lock);
 		exit(1);
 	}
 	// Step 2: Read directory entries from its data blocks, and copy them to filler
@@ -536,12 +533,13 @@ static int tfs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 			if(dblock[d]. valid == 1) filler(buffer, dblock[d].name, NULL, 0);
 		}
 	}
+	pthread_mutex_unlock(&lock);
 	return 0;
 }
 
 
 static int tfs_mkdir(const char *path, mode_t mode) {
-
+	pthread_mutex_lock(&lock);
 	// Step 1: Use dirname() and basename() to separate parent directory path and target directory name
 	char* copy1 = malloc(strlen(path)+1);
 	char* copy2 = malloc(strlen(path)+1);
@@ -552,6 +550,7 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	// Step 2: Call get_node_by_path() to get inode of parent directory
 	struct inode parent;
 	if(get_node_by_path(dname, 0, &parent) == -1){
+		pthread_mutex_unlock(&lock);
 		printf("Parent directory not made yet!\n");
 		exit(1);
 	}
@@ -563,11 +562,12 @@ static int tfs_mkdir(const char *path, mode_t mode) {
 	// Step 6: Call writei() to write inode to disk
 	free(copy1);
 	free(copy2);
+	pthread_mutex_unlock(&lock);
 	return 0;
 }
 
 static int tfs_rmdir(const char *path) {
-
+	pthread_mutex_lock(&lock);
 	// Step 1: Use dirname() and basename() to separate parent directory path and target directory name
 	char* copy1 = malloc(strlen(path)+1);
 	char* copy2 = malloc(strlen(path)+1);
@@ -579,14 +579,33 @@ static int tfs_rmdir(const char *path) {
 	struct inode target;
 	if(get_node_by_path(path, 0, &target) == -1){
 		printf("No target directory found to remove!\n");
+		free(copy1);
+		free(copy2);
+		pthread_mutex_unlock(&lock);
 		exit(1);
 	}
-	//read bitmaps from disk
-	for(int i = sblock.d_bitmap_blk; i < (sblock.d_bitmap_blk+num_dblockbmap_blocks); i++){
-		bio_read(i, (dblockbmap+((i-sblock.d_bitmap_blk)*BLOCK_SIZE)));
+	struct dirent dblock[num_dirent_per_block+1];
+	for(int i = 0; i < 16; i++){
+		if(target.direct_ptr[i] != 0){
+			bio_read(target.direct_ptr[i], &dblock);
+			for(int j = 0; j < num_dirent_per_block; j++){
+				if(strcmp(dblock[j].name, ".") == 0 || strcmp(dblock[j].name, "..") == 0) continue;
+				else if(dblock[j].valid == 1){
+					printf("Error: Attempting to remove non-empty directory!\n");
+					free(copy1);
+					free(copy2);
+					pthread_mutex_unlock(&lock);
+					return -1;
+				}
+			}
+		}
 	}
-	for(int i = sblock.i_bitmap_blk; i < (sblock.i_bitmap_blk+num_inodebmap_blocks); i++){
-		bio_read(i, (inodebmap+((i-sblock.i_bitmap_blk)*BLOCK_SIZE)));
+	//read bitmaps from disk
+	for(int i = sblock->d_bitmap_blk; i < (sblock->d_bitmap_blk+num_dblockbmap_blocks); i++){
+		bio_read(i, (dblockbmap+((i-sblock->d_bitmap_blk)*BLOCK_SIZE)));
+	}
+	for(int i = sblock->i_bitmap_blk; i < (sblock->i_bitmap_blk+num_inodebmap_blocks); i++){
+		bio_read(i, (inodebmap+((i-sblock->i_bitmap_blk)*BLOCK_SIZE)));
 	}
 	// Step 3: Clear data block bitmap of target directory
 	for(int i = 0; i < 16; i++){
@@ -600,11 +619,11 @@ static int tfs_rmdir(const char *path) {
 		target.direct_ptr[i] = 0;
 
 		//unset bitmap
-		unset_bitmap(dblockbmap, target.direct_ptr[i]-sblock.d_bitmap_blk);
+		unset_bitmap(dblockbmap, target.direct_ptr[i]-sblock->d_bitmap_blk);
 	}
 	//write data block bitmap
-	for(int i = sblock.d_bitmap_blk; i < (sblock.d_bitmap_blk+num_dblockbmap_blocks); i++){
-		bio_write(i, (dblockbmap+((i-sblock.d_bitmap_blk)*BLOCK_SIZE)));
+	for(int i = sblock->d_bitmap_blk; i < (sblock->d_bitmap_blk+num_dblockbmap_blocks); i++){
+		bio_write(i, (dblockbmap+((i-sblock->d_bitmap_blk)*BLOCK_SIZE)));
 	}
 	// Step 4: Clear inode bitmap and its data block (i cleared the data block in the previous for statement)
 	unset_bitmap(inodebmap, target.ino);
@@ -612,15 +631,18 @@ static int tfs_rmdir(const char *path) {
 	struct inode parent;
 	if(get_node_by_path(dname, 0, &parent) == -1){
 		printf("Parent directory could not be found in remove\n");
+		pthread_mutex_unlock(&lock);
 		exit(1);
 	}
 	// Step 6: Call dir_remove() to remove directory entry of target directory in its parent directory
 	if(dir_remove(parent, bname, strlen(bname)) == -1){
 		printf("Could not remove directory in remove\n");
+		pthread_mutex_unlock(&lock);
 		exit(1);
 	}
 	free(copy1);
 	free(copy2);
+	pthread_mutex_unlock(&lock);
 	return 0;
 }
 
@@ -631,7 +653,7 @@ static int tfs_releasedir(const char *path, struct fuse_file_info *fi) {
 }
 
 static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
-
+	pthread_mutex_lock(&lock);
 	// Step 1: Use dirname() and basename() to separate parent directory path and target file name
 	char* copy1 = malloc(strlen(path)+1);
 	char* copy2 = malloc(strlen(path)+1);
@@ -643,6 +665,7 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	struct inode parent;
 	if(get_node_by_path(dname, 0, &parent) == -1){
 		printf("Parent directory could not be found in tfs_create\n");
+		pthread_mutex_unlock(&lock);
 		exit(1);
 	}
 	// Step 3: Call get_avail_ino() to get an available inode number
@@ -654,7 +677,6 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	readi(ino, &target);
 	target.type = FIL;
 	writei(ino, &target);
-
 	struct dirent dblock[num_dirent_per_block+1];
 	bio_read(target.direct_ptr[0], &dblock);
 	memset(&dblock[1], 0, sizeof(struct dirent));
@@ -663,46 +685,59 @@ static int tfs_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 	//Step 5 and 6 are done in dir_add
 	free(copy1);
 	free(copy2);
+	pthread_mutex_unlock(&lock);
 	return 0;
 }
 
 static int tfs_open(const char *path, struct fuse_file_info *fi) {
-
+	pthread_mutex_lock(&lock);
 	// Step 1: Call get_node_by_path() to get inode from path
 	struct inode i;
-	if(get_node_by_path(path, 0, &i) != -1) return 0;
+	if(get_node_by_path(path, 0, &i) != -1){
+		pthread_mutex_unlock(&lock);
+		return 0;
+	}
 	// Step 2: If not find, return -1
+	pthread_mutex_unlock(&lock);
 	return -1;
 }
 
 static int tfs_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
-
+	pthread_mutex_lock(&lock);
 	// Step 1: You could call get_node_by_path() to get inode from path
 	struct inode i;
-	if(get_node_by_path(path, 0, &i) == -1) return -1;
+	if(get_node_by_path(path, 0, &i) == -1){
+		pthread_mutex_unlock(&lock);
+		return -1;
+	}
 	// Step 2: Based on size and offset, read its data blocks from disk
 	char* temp = malloc(16*BLOCK_SIZE);
 	for(int j = 0; j < 16; j++){
 		bio_read(i.direct_ptr[j], temp+(j*BLOCK_SIZE));
 	}
 	// Step 3: copy the correct amount of data from offset to buffer
-	strncpy(buffer, temp, size);
+	strncpy(buffer, temp+offset, size);
 	// Note: this function should return the amount of bytes you copied to buffer
 	free(temp);
+	pthread_mutex_unlock(&lock);
 	return size;
 }
 
 static int tfs_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
+	pthread_mutex_lock(&lock);
 	// Step 1: You could call get_node_by_path() to get inode from path
 	struct inode i;
-	if(get_node_by_path(path, 0, &i) == -1) return -1;
+	if(get_node_by_path(path, 0, &i) == -1){
+		pthread_mutex_unlock(&lock);
+		return -1;
+	}
 	// Step 2: Based on size and offset, read its data blocks from disk
 	char* temp = malloc(16*BLOCK_SIZE);
 	for(int j = 0; j < 16; j++){
 		bio_read(i.direct_ptr[j], temp+(j*BLOCK_SIZE));
 	}
 	// Step 3: Write the correct amount of data from offset to disk
-	strncpy(temp, buffer, size);
+	strncpy(temp+offset, buffer, size);
 	// Step 4: Update the inode info and write it to disk
 	for(int j = 0; j < 16; j++){
 		bio_write(i.direct_ptr[j], temp+(j*BLOCK_SIZE));
@@ -711,23 +746,66 @@ static int tfs_write(const char *path, const char *buffer, size_t size, off_t of
 	free(temp);
 	i.size+=size;
 	writei(i.ino, &i);
+	pthread_mutex_unlock(&lock);
 	return size;
 }
 
 static int tfs_unlink(const char *path) {
-
+	pthread_mutex_lock(&lock);
+	for(int i = sblock->d_bitmap_blk; i < (sblock->d_bitmap_blk+num_dblockbmap_blocks); i++){
+		bio_read(i, (dblockbmap+((i-sblock->d_bitmap_blk)*BLOCK_SIZE)));
+	}
+	for(int i = sblock->i_bitmap_blk; i < (sblock->i_bitmap_blk+num_inodebmap_blocks); i++){
+		bio_read(i, (inodebmap+((i-sblock->i_bitmap_blk)*BLOCK_SIZE)));
+	}
 	// Step 1: Use dirname() and basename() to separate parent directory path and target file name
-
+	char* copy1 = malloc(strlen(path)+1);
+	char* copy2 = malloc(strlen(path)+1);
+	strcpy(copy1, path);
+	strcpy(copy2, path);
+	char* bname = basename(copy1);
+	char* dname = dirname(copy2);
 	// Step 2: Call get_node_by_path() to get inode of target file
-
+	struct inode i;
+	if(get_node_by_path(path, 0, &i) == -1){
+		pthread_mutex_unlock(&lock);
+		free(copy1);
+		free(copy2);
+		return ENOENT;
+	}
 	// Step 3: Clear data block bitmap of target file
-
+	for(int j = 0; j < 16; j++){
+		if(i.direct_ptr[j] <= 0) continue;
+		unset_bitmap(dblockbmap, i.direct_ptr[j]);
+	}
 	// Step 4: Clear inode bitmap and its data block
+	unset_bitmap(inodebmap, i.ino);
 
 	// Step 5: Call get_node_by_path() to get inode of parent directory
-
+	struct inode parent;
+	if(get_node_by_path(dname, 0, &parent) == -1){
+		free(copy1);
+		free(copy2);
+		pthread_mutex_unlock(&lock);
+		return ENOENT;
+	}
 	// Step 6: Call dir_remove() to remove directory entry of target file in its parent directory
-
+	if(dir_remove(parent, bname, strlen(bname)) == -1){
+		printf("Could not remove directory in dir_remove\n");
+		free(copy1);
+		free(copy2);
+		pthread_mutex_unlock(&lock);
+		exit(1);
+	}
+	free(copy1);
+	free(copy2);
+	for(int i = sblock->d_bitmap_blk; i < (sblock->d_bitmap_blk+num_dblockbmap_blocks); i++){
+		bio_write(i, (dblockbmap+((i-sblock->d_bitmap_blk)*BLOCK_SIZE)));
+	}
+	for(int i = sblock->i_bitmap_blk; i < (sblock->i_bitmap_blk+num_inodebmap_blocks); i++){
+		bio_write(i, (inodebmap+((i-sblock->i_bitmap_blk)*BLOCK_SIZE)));
+	}
+	pthread_mutex_unlock(&lock);
 	return 0;
 }
 
