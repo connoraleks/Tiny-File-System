@@ -1,9 +1,6 @@
 # Tiny-File-System
 Virtual file management system
 
-Connor Aleksandrowicz
-Ryan Berardi
-
 ## Tfs_init:
 
 Tfs_init begins by calling dev_open() on diskfile_path.If the return value is -1, we call tfs_mkfs.
