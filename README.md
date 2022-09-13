@@ -1,11 +1,8 @@
 # Tiny-File-System
 Virtual file management system
 
-Connor Aleksandrowicz cja142
-Ryan Berardi rtb
-```
-1
-```
+Connor Aleksandrowicz
+Ryan Berardi
 
 ## Tfs_init:
 
@@ -61,9 +58,6 @@ disk, make the necessary modifications, and writethem back to disk. We then get 
 the parent directory and call dir_remove(). Finally,we free, unlock, and return 0
 
 
-```
-2
-```
 ## Tfs_create:
 
 Tfs_create begins by locking our global mutex lock.It then creates two copies of path **_(Same
@@ -108,9 +102,6 @@ this does not work we return an error, free, unlock,and exit. Otherwise, we free
 bitmaps to disk, unlock the mutex, and return 0.
 
 
-```
-3
-```
 # Benchmark Results
 
 ## Total Blocks Used:
