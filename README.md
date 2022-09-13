@@ -123,15 +123,13 @@ When running the simple_test benchmark with a BLOCK_SIZEof 16,384 we make:
 ```
 ## Time to Run:
 
-When running the simple_test benchmark with a BLOCK_SIZEof 4,096 the timer recorded
-
+When running the simple_test benchmark with a BLOCK_SIZE of 4,096 the timer recorded
 **2,000 ms**.
 
-When running the simple_test benchmark with a BLOCK_SIZEof 8,192 the timer recorded
+When running the simple_test benchmark with a BLOCK_SIZE of 8,192 the timer recorded
 **4,000 ms**.
 
-When running the simple_test benchmark with a BLOCK_SIZEof 16,384 the timer recorded
-
+When running the simple_test benchmark with a BLOCK_SIZE of 16,384 the timer recorded
 **4,000 ms**.
 
 
